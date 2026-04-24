@@ -1,7 +1,10 @@
 name: Build WDA IPA
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-wda.yml"
 
 jobs:
   build:

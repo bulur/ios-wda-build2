@@ -3,8 +3,7 @@ name: Build WDA IPA
 on:
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/build-wda.yml"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -27,8 +26,6 @@ jobs:
       - name: Build WDA with ad-hoc signing
         run: |
           cd WDA
-
-          # Build with ad-hoc signing (-) so all bundles get proper code signatures
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -41,113 +38,73 @@ jobs:
             DEVELOPMENT_TEAM="" \
             PRODUCT_BUNDLE_IDENTIFIER=com.facebook.WebDriverAgentRunner
 
-      - name: Inject xctestconfig and package IPA
+      - name: Inject xctestconfig and re-sign
         run: |
           cd WDA
-
           RUNNER_PATH=$(find build/Build/Products/Release-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
-
           if [ -z "$RUNNER_PATH" ]; then
-            echo "ERROR: WebDriverAgentRunner-Runner.app not found"
+            echo "ERROR: Runner not found"
             find build/Build/Products -name "*.app" -type d
             exit 1
           fi
-
-          echo "Found runner at: $RUNNER_PATH"
-
-          echo "=== PlugIns ==="
-          ls -laR "$RUNNER_PATH/PlugIns/" 2>/dev/null || echo "No PlugIns"
-
-          echo "=== Code signatures ==="
-          codesign -dvv "$RUNNER_PATH" 2>&1 | head -10
-          echo "---"
-          codesign -dvv "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -10
+          echo "Runner: $RUNNER_PATH"
 
           # Inject xctestconfig bundle
-          XCCONFIG_DIR="$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctestconfig"
-          mkdir -p "$XCCONFIG_DIR"
+          XCCONFIG="$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctestconfig"
+          mkdir -p "$XCCONFIG"
 
-          cat > /tmp/xctestconfig_info.plist << 'PLISTEOF'
+          cat > "$XCCONFIG/Info.plist" << 'PLEOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleDevelopmentRegion</key>
-            <string>en</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.facebook.WebDriverAgentRunner.xctestconfig</string>
-            <key>CFBundleInfoDictionaryVersion</key>
-            <string>6.0</string>
-            <key>CFBundleName</key>
-            <string>WebDriverAgentRunner</string>
-            <key>CFBundlePackageType</key>
-            <string>XCTESTCONFIG</string>
-            <key>CFBundleShortVersionString</key>
-            <string>1.0</string>
-            <key>CFBundleVersion</key>
-            <string>1</string>
-          </dict>
-          </plist>
-PLISTEOF
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>com.facebook.WebDriverAgentRunner.xctestconfig</string>
+          <key>CFBundleName</key><string>WebDriverAgentRunner</string>
+          <key>CFBundlePackageType</key><string>XCTESTCONFIG</string>
+          <key>CFBundleShortVersionString</key><string>1.0</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+PLEOF
 
-          cat > /tmp/xctestconfig_content.plist << 'PLISTEOF'
+          cat > "$XCCONFIG/WebDriverAgentRunner.xctestconfig" << 'PLEOF2'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>TestBundlePath</key>
-            <string>__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest</string>
-            <key>TestHostPath</key>
-            <string>__TESTHOST__</string>
-            <key>TestingEnvironmentVariables</key>
-            <dict>
-              <key>DYLD_FRAMEWORK_PATH</key>
-              <string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
-              <key>DYLD_LIBRARY_PATH</key>
-              <string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
-              <key>XCInjectBundleInto</key>
-              <string>__TESTHOST__/WebDriverAgentRunner-Runner</string>
-            </dict>
-            <key>AutomaticTermination</key>
-            <true/>
+          <plist version="1.0"><dict>
+          <key>TestBundlePath</key><string>__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest</string>
+          <key>TestHostPath</key><string>__TESTHOST__</string>
+          <key>TestingEnvironmentVariables</key><dict>
+          <key>DYLD_FRAMEWORK_PATH</key><string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
+          <key>DYLD_LIBRARY_PATH</key><string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
+          <key>XCInjectBundleInto</key><string>__TESTHOST__/WebDriverAgentRunner-Runner</string>
           </dict>
-          </plist>
-PLISTEOF
+          <key>AutomaticTermination</key><true/>
+          </dict></plist>
+PLEOF2
 
-          cp /tmp/xctestconfig_info.plist "$XCCONFIG_DIR/Info.plist"
-          cp /tmp/xctestconfig_content.plist "$XCCONFIG_DIR/WebDriverAgentRunner.xctestconfig"
-
-          # Re-sign the app bundle to include the new xctestconfig
-          # First resign the xctestconfig
-          codesign -f -s - "$XCCONFIG_DIR" 2>&1
-          # Then the xctest bundle
+          # Re-sign all bundles bottom-up
+          codesign -f -s - "$XCCONFIG" 2>&1
+          codesign -f -s - "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework" 2>&1 || true
           codesign -f -s - "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1
-          # Then frameworks
-          for fw in "$RUNNER_PATH/Frameworks/"*.framework "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest/Frameworks/"*.framework; do
-            if [ -d "$fw" ]; then
-              codesign -f -s - "$fw" 2>&1
-            fi
+          for fw in "$RUNNER_PATH/Frameworks/"*.framework; do
+            [ -d "$fw" ] && codesign -f -s - "$fw" 2>&1
           done
-          # Finally the main app
           codesign -f -s - "$RUNNER_PATH" 2>&1
 
-          echo "=== Re-signed ==="
-          codesign -dvv "$RUNNER_PATH" 2>&1 | head -5
+          echo "=== Verified signatures ==="
+          codesign -v "$RUNNER_PATH" 2>&1 && echo "Main app: OK" || echo "Main app: FAIL"
+          codesign -v "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 && echo "xctest: OK" || echo "xctest: FAIL"
 
-          # Remove dSYM to reduce size
-          find "$RUNNER_PATH" -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null
+          # Remove dSYM
+          find "$RUNNER_PATH" -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
 
-          # Create IPA
+          # Package IPA
           mkdir -p Payload
           cp -r "$RUNNER_PATH" Payload/
           zip -qr WebDriverAgentRunner.ipa Payload/
           rm -rf Payload
 
-          echo "=== IPA ==="
           ls -lh WebDriverAgentRunner.ipa
-          unzip -l WebDriverAgentRunner.ipa | grep -E "(xctest|xctestconfig)" | head -20
 
-      - name: Upload IPA artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: WebDriverAgentRunner-Xcode16

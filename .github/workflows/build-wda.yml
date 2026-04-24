@@ -1,0 +1,93 @@
+name: Build WDA IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16.2
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Clone WebDriverAgent
+        run: |
+          git clone https://github.com/appium/WebDriverAgent.git WDA
+          cd WDA
+          git log --oneline -3
+
+      - name: Build WDA (unsigned, code signing disabled)
+        run: |
+          cd WDA
+
+          # Build WebDriverAgentLib framework
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentLib \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.facebook.WebDriverAgentLib
+
+          # Build WebDriverAgentRunner
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.facebook.WebDriverAgentRunner
+
+      - name: Package IPA
+        run: |
+          cd WDA
+
+          RUNNER_PATH=$(find build/Build/Products/Release-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
+
+          if [ -z "$RUNNER_PATH" ]; then
+            echo "ERROR: WebDriverAgentRunner-Runner.app not found"
+            find build/Build/Products -name "*.app" -type d
+            exit 1
+          fi
+
+          echo "Found runner at: $RUNNER_PATH"
+
+          echo "=== Runner contents ==="
+          ls -la "$RUNNER_PATH/"
+          echo "=== PlugIns ==="
+          ls -laR "$RUNNER_PATH/PlugIns/" 2>/dev/null || echo "No PlugIns dir"
+
+          echo "=== xctestconfig check ==="
+          find "$RUNNER_PATH" -name "*.xctestconfig" 2>/dev/null
+
+          # Create IPA
+          mkdir -p Payload
+          cp -r "$RUNNER_PATH" Payload/
+          zip -qr WebDriverAgentRunner.ipa Payload/
+          rm -rf Payload
+
+          echo "=== IPA size ==="
+          ls -lh WebDriverAgentRunner.ipa
+
+          echo "=== IPA key contents ==="
+          unzip -l WebDriverAgentRunner.ipa | grep -E "(xctest|xctestconfig|Info.plist|WebDriverAgentLib|Framework)" | head -40
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgentRunner-Xcode16
+          path: WDA/WebDriverAgentRunner.ipa
+          retention-days: 30

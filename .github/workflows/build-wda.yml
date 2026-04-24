@@ -17,6 +17,9 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Install ldid
+        run: brew install ldid
+
       - name: Clone WebDriverAgent
         run: |
           git clone https://github.com/appium/WebDriverAgent.git WDA
@@ -38,7 +41,7 @@ jobs:
             DEVELOPMENT_TEAM="" \
             PRODUCT_BUNDLE_IDENTIFIER=com.facebook.WebDriverAgentRunner
 
-      - name: Inject xctestconfig and re-sign
+      - name: Inject xctestconfig and pseudo-sign with ldid
         run: |
           cd WDA
           RUNNER=$(find build/Build/Products/Release-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
@@ -49,10 +52,10 @@ jobs:
           fi
           echo "Runner: $RUNNER"
 
+          # Inject xctestconfig bundle
           XCC="$RUNNER/PlugIns/WebDriverAgentRunner.xctestconfig"
           mkdir -p "$XCC"
 
-          # Write xctestconfig Info.plist using python to avoid heredoc issues
           python3 -c "
           import plistlib
           d = {
@@ -66,7 +69,6 @@ jobs:
             plistlib.dump(d, f, fmt=plistlib.FMT_XML)
           "
 
-          # Write xctestconfig content
           python3 -c "
           import plistlib
           d = {
@@ -83,21 +85,38 @@ jobs:
             plistlib.dump(d, f, fmt=plistlib.FMT_XML)
           "
 
-          # Re-sign all bundles bottom-up
-          codesign -f -s - "$XCC" 2>&1
-          codesign -f -s - "$RUNNER/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework" 2>&1 || true
-          codesign -f -s - "$RUNNER/PlugIns/WebDriverAgentRunner.xctest" 2>&1
-          for fw in "$RUNNER/Frameworks/"*.framework; do
-            [ -d "$fw" ] && codesign -f -s - "$fw" 2>&1
-          done
-          codesign -f -s - "$RUNNER" 2>&1
+          # Pseudo-sign ALL binaries with ldid
+          # This creates a valid LC_CODE_SIGNATURE that resigning tools can properly replace
+          echo "=== Pseudo-signing binaries with ldid ==="
 
-          echo "=== Verify signatures ==="
-          codesign -v "$RUNNER" 2>&1 && echo "Main: OK" || echo "Main: FAIL"
-          codesign -v "$RUNNER/PlugIns/WebDriverAgentRunner.xctest" 2>&1 && echo "xctest: OK" || echo "xctest: FAIL"
+          # Main app binary
+          ldid -S "$RUNNER/WebDriverAgentRunner-Runner" 2>&1
+
+          # xctest bundle binary
+          ldid -S "$RUNNER/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner" 2>&1
+
+          # WebDriverAgentLib framework
+          ldid -S "$RUNNER/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework/WebDriverAgentLib" 2>&1 || true
+
+          # System frameworks
+          for fw in "$RUNNER/Frameworks/"*.framework; do
+            if [ -d "$fw" ]; then
+              FWNAME=$(basename "$fw" .framework)
+              if [ -f "$fw/$FWNAME" ]; then
+                ldid -S "$fw/$FWNAME" 2>&1
+                echo "Signed: $FWNAME"
+              fi
+            fi
+          done
 
           # Remove dSYM
           find "$RUNNER" -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
+
+          # Remove any existing _CodeSignature dirs so resigner creates fresh ones
+          find "$RUNNER" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
+
+          echo "=== Signed binaries ==="
+          find "$RUNNER" -type f -perm +111 | head -20
 
           # Package IPA
           mkdir -p Payload

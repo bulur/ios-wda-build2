@@ -41,67 +41,69 @@ jobs:
       - name: Inject xctestconfig and re-sign
         run: |
           cd WDA
-          RUNNER_PATH=$(find build/Build/Products/Release-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
-          if [ -z "$RUNNER_PATH" ]; then
+          RUNNER=$(find build/Build/Products/Release-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
+          if [ -z "$RUNNER" ]; then
             echo "ERROR: Runner not found"
             find build/Build/Products -name "*.app" -type d
             exit 1
           fi
-          echo "Runner: $RUNNER_PATH"
+          echo "Runner: $RUNNER"
 
-          # Inject xctestconfig bundle
-          XCCONFIG="$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctestconfig"
-          mkdir -p "$XCCONFIG"
+          XCC="$RUNNER/PlugIns/WebDriverAgentRunner.xctestconfig"
+          mkdir -p "$XCC"
 
-          cat > "$XCCONFIG/Info.plist" << 'PLEOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-          <key>CFBundleIdentifier</key><string>com.facebook.WebDriverAgentRunner.xctestconfig</string>
-          <key>CFBundleName</key><string>WebDriverAgentRunner</string>
-          <key>CFBundlePackageType</key><string>XCTESTCONFIG</string>
-          <key>CFBundleShortVersionString</key><string>1.0</string>
-          <key>CFBundleVersion</key><string>1</string>
-          </dict></plist>
-PLEOF
+          # Write xctestconfig Info.plist using python to avoid heredoc issues
+          python3 -c "
+          import plistlib
+          d = {
+            'CFBundleIdentifier': 'com.facebook.WebDriverAgentRunner.xctestconfig',
+            'CFBundleName': 'WebDriverAgentRunner',
+            'CFBundlePackageType': 'XCTESTCONFIG',
+            'CFBundleShortVersionString': '1.0',
+            'CFBundleVersion': '1',
+          }
+          with open('$XCC/Info.plist', 'wb') as f:
+            plistlib.dump(d, f, fmt=plistlib.FMT_XML)
+          "
 
-          cat > "$XCCONFIG/WebDriverAgentRunner.xctestconfig" << 'PLEOF2'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-          <key>TestBundlePath</key><string>__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest</string>
-          <key>TestHostPath</key><string>__TESTHOST__</string>
-          <key>TestingEnvironmentVariables</key><dict>
-          <key>DYLD_FRAMEWORK_PATH</key><string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
-          <key>DYLD_LIBRARY_PATH</key><string>__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks</string>
-          <key>XCInjectBundleInto</key><string>__TESTHOST__/WebDriverAgentRunner-Runner</string>
-          </dict>
-          <key>AutomaticTermination</key><true/>
-          </dict></plist>
-PLEOF2
+          # Write xctestconfig content
+          python3 -c "
+          import plistlib
+          d = {
+            'TestBundlePath': '__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest',
+            'TestHostPath': '__TESTHOST__',
+            'TestingEnvironmentVariables': {
+              'DYLD_FRAMEWORK_PATH': '__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks',
+              'DYLD_LIBRARY_PATH': '__TESTHOST__/Frameworks:__TESTHOST__/PlugIns/WebDriverAgentRunner.xctest/Frameworks',
+              'XCInjectBundleInto': '__TESTHOST__/WebDriverAgentRunner-Runner',
+            },
+            'AutomaticTermination': True,
+          }
+          with open('$XCC/WebDriverAgentRunner.xctestconfig', 'wb') as f:
+            plistlib.dump(d, f, fmt=plistlib.FMT_XML)
+          "
 
           # Re-sign all bundles bottom-up
-          codesign -f -s - "$XCCONFIG" 2>&1
-          codesign -f -s - "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework" 2>&1 || true
-          codesign -f -s - "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1
-          for fw in "$RUNNER_PATH/Frameworks/"*.framework; do
+          codesign -f -s - "$XCC" 2>&1
+          codesign -f -s - "$RUNNER/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework" 2>&1 || true
+          codesign -f -s - "$RUNNER/PlugIns/WebDriverAgentRunner.xctest" 2>&1
+          for fw in "$RUNNER/Frameworks/"*.framework; do
             [ -d "$fw" ] && codesign -f -s - "$fw" 2>&1
           done
-          codesign -f -s - "$RUNNER_PATH" 2>&1
+          codesign -f -s - "$RUNNER" 2>&1
 
-          echo "=== Verified signatures ==="
-          codesign -v "$RUNNER_PATH" 2>&1 && echo "Main app: OK" || echo "Main app: FAIL"
-          codesign -v "$RUNNER_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 && echo "xctest: OK" || echo "xctest: FAIL"
+          echo "=== Verify signatures ==="
+          codesign -v "$RUNNER" 2>&1 && echo "Main: OK" || echo "Main: FAIL"
+          codesign -v "$RUNNER/PlugIns/WebDriverAgentRunner.xctest" 2>&1 && echo "xctest: OK" || echo "xctest: FAIL"
 
           # Remove dSYM
-          find "$RUNNER_PATH" -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
+          find "$RUNNER" -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
 
           # Package IPA
           mkdir -p Payload
-          cp -r "$RUNNER_PATH" Payload/
+          cp -r "$RUNNER" Payload/
           zip -qr WebDriverAgentRunner.ipa Payload/
           rm -rf Payload
-
           ls -lh WebDriverAgentRunner.ipa
 
       - name: Upload IPA
